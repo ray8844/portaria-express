@@ -1,21 +1,29 @@
-const handleLogin = async () => {
-  setLoading(true)
+const handleLogin = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setLoading(true);
+  setError(null);
 
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email,
-    password,
-  })
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
 
-  if (error) {
-    alert(error.message)
-    setLoading(false)
-    return
+    if (error) {
+      throw error;
+    }
+
+    // 🔑 Força validação da sessão
+    if (!data.session) {
+      throw new Error("Sessão não criada. Tente novamente.");
+    }
+
+    // Aqui não precisa redirecionar
+    // O AuthContext vai detectar
+
+  } catch (err: any) {
+    setError(err.message || "Falha ao realizar login");
+  } finally {
+    setLoading(false);
   }
-
-  // 🔑 ISSO É O MAIS IMPORTANTE
-  if (data.session) {
-    // não precisa redirecionar manualmente
-    // o AuthContext vai detectar a sessão
-    setLoading(false)
-  }
-}
+};
