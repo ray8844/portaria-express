@@ -27,3 +27,6 @@ const handleLogin = async (e: React.FormEvent) => {
     setLoading(false);
   }
 };
+
+export default Login;
+
