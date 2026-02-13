@@ -13,130 +13,145 @@ interface InternalAuthContextType {
   changePassword: (newPassword: string) => Promise<boolean>;
   loading: boolean;
   error: string | null;
+  resetContext: () => void;
 }
+
+const STORAGE_KEY = 'portaria_express_internal_user_v2';
 
 const InternalAuthContext = createContext<InternalAuthContextType | undefined>(undefined);
 
 export const InternalAuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { session, loading: authLoading } = useAuth();
-  const [internalUser, setInternalUser] = useState<InternalUser | null>(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [loading, setLoading] = useState(true);
+  
+  // 1. Tenta restaurar a sessão IMEDIATAMENTE do localStorage para evitar que a tela de login apareça no F5
+  const [internalUser, setInternalUser] = useState<InternalUser | null>(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    return saved ? JSON.parse(saved) : null;
+  });
+  
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return !!localStorage.getItem(STORAGE_KEY);
+  });
+
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const resetContext = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    setInternalUser(null);
+    setIsAuthenticated(false);
+    setError(null);
+    setLoading(false);
+  };
+
+  // Sincronização e verificação de integridade
   useEffect(() => {
-    // Se o nível 1 ainda está carregando, o nível 2 espera
     if (authLoading) return;
 
-    // Se não há sessão Supabase, não há o que validar no interno
+    // Se o login de email saiu, o operacional deve sair também
     if (!session) {
-      setLoading(false);
-      setIsAuthenticated(false);
+      resetContext();
       return;
     }
 
-    const checkInternalSession = async () => {
+    // Se já estamos autenticados, não precisamos bloquear a UI com loading
+    // Mas vamos verificar se o usuário ainda existe no banco "por trás"
+    const verifyUserInBackground = async () => {
       try {
         const { data: users, error: fetchError } = await supabase
           .from('internal_users')
-          .select('*')
+          .select('id, username, role, must_change_password, supabase_user_id')
           .eq('supabase_user_id', session.user.id);
 
         if (fetchError) throw fetchError;
 
-        // Se a tabela estiver vazia, cria o ADM padrão e carrega ele
+        // Se a base estiver vazia, cria o ADM silenciosamente
         if (!users || users.length === 0) {
-          const salt = await bcrypt.genSalt(10);
+          const salt = await bcrypt.genSalt(6);
           const hash = await bcrypt.hash('123', salt);
-          const { data: newUser, error: insertError } = await supabase.from('internal_users').insert({
+          await supabase.from('internal_users').insert({
             supabase_user_id: session.user.id,
             username: 'adm',
             password_hash: hash,
             role: 'admin',
             must_change_password: true
-          }).select().single();
-
-          if (insertError) throw insertError;
-          
-          // Em vez de reload(), vamos apenas setar o estado
-          if (newUser) {
-             // Não loga automaticamente para forçar o usuário a ver a tela de login operacional
-             setLoading(false);
-             return;
-          }
-        }
-
-        // Tenta recuperar sessão salva
-        const saved = localStorage.getItem('portaria_express_internal_session');
-        if (saved && users) {
-          const { username } = JSON.parse(saved);
-          const matchedUser = users.find(u => u.username === username);
-          if (matchedUser) {
-            setInternalUser(matchedUser);
-            setIsAuthenticated(true);
-          }
+          });
+        } 
+        
+        // Se o usuário atual foi deletado do banco, desloga ele
+        if (isAuthenticated && internalUser) {
+           const stillExists = users?.some(u => u.username === internalUser.username);
+           if (!stillExists) resetContext();
         }
       } catch (err) {
-        console.error("InternalAuth: Erro ao verificar sessão operacional:", err);
-      } finally {
-        setLoading(false);
+        console.error("InternalAuth: Erro na verificação de fundo", err);
       }
     };
 
-    checkInternalSession();
+    verifyUserInBackground();
   }, [session, authLoading]);
 
   const loginInternal = async (username: string, password: string): Promise<boolean> => {
     setLoading(true);
     setError(null);
+    
+    // Timeout longo de 40s para dispositivos muito lentos
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      setLoading(false);
+      setError("O dispositivo demorou para processar a senha. Tente novamente.");
+    }, 40000);
+
     try {
-      if (!session) throw new Error("Sessão Supabase expirada.");
+      if (!session) throw new Error("Sessão principal expirada.");
 
       const { data: user, error: userError } = await supabase
         .from('internal_users')
         .select('*')
         .eq('supabase_user_id', session.user.id)
-        .eq('username', username)
-        .single();
+        .eq('username', username.toLowerCase().trim())
+        .maybeSingle();
 
-      if (userError || !user) {
-        setError("Usuário não encontrado.");
-        setLoading(false);
+      if (userError) throw userError;
+      if (!user) {
+        setError("Usuário não cadastrado.");
         return false;
       }
 
+      // Pequeno delay para a UI respirar antes do Bcrypt (pesado)
+      await new Promise(r => setTimeout(r, 100));
+      
       const isValid = await bcrypt.compare(password, user.password_hash);
 
       if (isValid) {
         setInternalUser(user);
         setIsAuthenticated(true);
-        localStorage.setItem('portaria_express_internal_session', JSON.stringify({ username }));
-        setLoading(false);
+        // Salva o objeto inteiro para restauração instantânea no F5
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
         return true;
       } else {
-        setError("Senha incorreta.");
-        setLoading(false);
+        setError("Senha operacional incorreta.");
         return false;
       }
     } catch (err: any) {
-      setError(err.message || "Erro no servidor.");
-      setLoading(false);
+      setError(err.message || "Erro de conexão.");
       return false;
+    } finally {
+      clearTimeout(timeoutId);
+      setLoading(false);
     }
   };
 
   const logoutInternal = () => {
-    localStorage.removeItem('portaria_express_internal_session');
-    setInternalUser(null);
-    setIsAuthenticated(false);
-    setLoading(false);
+    resetContext();
   };
 
   const changePassword = async (newPassword: string): Promise<boolean> => {
     if (!internalUser) return false;
     setLoading(true);
     try {
-      const salt = await bcrypt.genSalt(10);
+      const salt = await bcrypt.genSalt(8);
       const hash = await bcrypt.hash(newPassword, salt);
       const { error: updateError } = await supabase
         .from('internal_users')
@@ -145,13 +160,15 @@ export const InternalAuthProvider: React.FC<{ children: React.ReactNode }> = ({ 
       
       if (updateError) throw updateError;
       
-      setInternalUser({ ...internalUser, password_hash: hash, must_change_password: false });
-      setLoading(false);
+      const updatedUser = { ...internalUser, password_hash: hash, must_change_password: false };
+      setInternalUser(updatedUser);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedUser));
       return true;
     } catch (err: any) {
       setError(err.message);
-      setLoading(false);
       return false;
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -163,7 +180,8 @@ export const InternalAuthProvider: React.FC<{ children: React.ReactNode }> = ({ 
       logoutInternal,
       changePassword,
       loading,
-      error
+      error,
+      resetContext
     }}>
       {children}
     </InternalAuthContext.Provider>
