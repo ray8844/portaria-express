@@ -1,10 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
-import { useNavigate } from 'react-router-dom';
 
 const Login: React.FC = () => {
-  const navigate = useNavigate();
-
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -22,14 +19,16 @@ const Login: React.FC = () => {
         password,
       });
 
-      if (error) throw error;
-
-      console.log('Login OK:', data);
-
-      if (data.session) {
-        navigate('/'); // ou /dashboard
+      if (error) {
+        throw error;
       }
 
+      if (data.session) {
+        console.log('Login OK');
+
+        // Recarrega para o AuthContext detectar
+        window.location.reload();
+      }
     } catch (err: any) {
       console.error('Erro no login:', err);
       setError(err.message || 'Erro ao fazer login');
@@ -64,7 +63,7 @@ const Login: React.FC = () => {
           </div>
         )}
 
-        {/* Formulário */}
+        {/* Form */}
         <form onSubmit={handleLogin} className="space-y-4">
 
           {/* Email */}
@@ -76,7 +75,6 @@ const Login: React.FC = () => {
             <input
               type="email"
               required
-              autoFocus
               className="w-full p-4 bg-slate-100 dark:bg-slate-900 rounded-xl focus:ring-2 focus:ring-blue-500 text-sm dark:text-white"
               placeholder="seu@email.com"
               value={email}
