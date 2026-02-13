@@ -1,6 +1,6 @@
-import { createContext, useContext, useEffect, useState } from 'react';
-import { Session } from '@supabase/supabase-js';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { Session } from '@supabase/supabase-js';
 
 interface AuthContextType {
   session: Session | null;
@@ -14,48 +14,28 @@ const AuthContext = createContext<AuthContextType>({
   signOut: async () => {},
 });
 
-export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
 
-    let mounted = true;
+    // Pega sessão inicial
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setLoading(false);
+    });
 
-    const loadSession = async () => {
-      try {
-        const { data } = await supabase.auth.getSession();
-
-        if (mounted) {
-          setSession(data.session);
-          setLoading(false);
-        }
-
-      } catch (err) {
-        console.error('Erro ao carregar sessão:', err);
-        setLoading(false);
-      }
-    };
-
-    loadSession();
-
+    // Escuta mudanças de login/logout
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-
-      console.log('Auth change:', _event);
-
-      if (mounted) {
-        setSession(session);
-        setLoading(false);
-      }
+      setSession(session);
     });
 
     return () => {
-      mounted = false;
       subscription.unsubscribe();
     };
-
   }, []);
 
   const signOut = async () => {
@@ -64,13 +44,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider
-      value={{
-        session,
-        loading,
-        signOut,
-      }}
-    >
+    <AuthContext.Provider value={{ session, loading, signOut }}>
       {children}
     </AuthContext.Provider>
   );
